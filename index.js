@@ -4,7 +4,7 @@ var path = require('path');
 var io = require("./io");
 
 var tsTempFile = null;
-['TMPDIR', 'TMP', 'TEMP'].forEach(function(td) {
+['TMPDIR', 'TMP', 'TEMP'].forEach(function (td) {
     if(!tsTempFile && process.env[td]) tsTempFile = process.env[td];
 });
 tsTempFile = path.join((tsTempFile || "/tmp"), "typescript-require-" + Date.now() + ".js");
@@ -18,34 +18,46 @@ TypeScript.moduleGenTarget = TypeScript.ModuleGenTarget.Synchronous;
 
 fs.unlinkSync(tsTempFile);
 
-
 //setting up the compiler
 var settings = new TypeScript.CompilationSettings();
-settings.codeGenTarget = TypeScript.CodeGenTarget.ES5;
 settings.moduleGenTarget = TypeScript.ModuleGenTarget.Synchronous;
 settings.resolve = true;
 
 var env = new TypeScript.CompilationEnvironment(settings, io);
 
-require.extensions['.ts'] = function(module) {
-    
+require.extensions['.ts'] = function (module) {
+
     var js = '';
-    var output = {
-        Write: function(value) {
-            js += value;
+
+    var emitter = {
+        createFile: function (fileName, useUTF8) {
+            return {
+                Write: function (value) {
+                    js += value;
+                },
+                WriteLine: function (value) {
+                    js += value + "\n";
+                },
+                Close: function () {}
+            };
         },
-        WriteLine: function(value) {
-            js += value + "\n";
-        },
-        Close: function() {}
+        directoryExists: io.directoryExists,
+        fileExists: io.fileExists,
+        resolvePath: io.resolvePath
     };
 
-    var nulloutput = {
-        Write: function(value) {},
-        WriteLine: function(value) {},
-        Close: function() {}
+
+    var stderr = {
+        Write: function (str) {
+            process.stderr.write(str);
+        },
+        WriteLine: function (str) {
+            process.stderr.write(str + '\n');
+        },
+        Close: function () {}
     };
-    var compiler = new TypeScript.TypeScriptCompiler(null, new TypeScript.NullLogger(), settings);
+
+    var compiler = new TypeScript.TypeScriptCompiler(stderr, new TypeScript.NullLogger(), settings);
     compiler.parser.errorRecovery = true;
     var units = [{
         fileName: path.join(__dirname, "./typings/lib.d.ts")
@@ -56,22 +68,22 @@ require.extensions['.ts'] = function(module) {
     var resolver = new TypeScript.CodeResolver(env);
 
     resolver.resolveCode(moduleFilename, "", false, {
-        postResolution: function(file, code) {
-            if(!units.some(function(u) {
+        postResolution: function (file, code) {
+            if(!units.some(function (u) {
                 return u.fileName == code.path
             })) units.push({
                 fileName: code.path,
                 code: code.content
             });
         },
-        postResolutionError: function(file, message) {
+        postResolutionError: function (file, message) {
             throw new Error('TypeScript Error: ' + message + '\n File: ' + file);
         }
     });
-    
+
     var isErrorPrinted = false;
 
-    compiler.setErrorCallback(function(start, len, message, block) {
+    compiler.setErrorCallback(function (start, len, message, block) {
 
         if(isErrorPrinted == false && units[block].fileName == moduleFilename) {
             var code = units[block].code;
@@ -83,7 +95,7 @@ require.extensions['.ts'] = function(module) {
             line[0].replace(/./g, '-'), line[1].replace(/./g, '^'), line[2].replace(/./g, '-'), ];
 
             var error = new Error('TypeScript Error: ' + message);
-            error.stack = ['TypeScript Error: ' + message, 'File: ' + units[block].fileName, '', 'Line '+cursor.length +': '+ line.join(""), '------' + underline.join("")].join('\n');
+            error.stack = ['TypeScript Error: ' + message, 'File: ' + units[block].fileName, '', 'Line ' + cursor.length + ': ' + line.join(""), '------' + underline.join("")].join('\n');
 
             console.error('\n' + error.stack);
 
@@ -91,19 +103,14 @@ require.extensions['.ts'] = function(module) {
         }
     });
 
-    units.forEach(function(u) {
+    units.forEach(function (u) {
         if(!u.code) u.code = fs.readFileSync(u.fileName, "utf8");
-
         compiler.addUnit(u.code, u.fileName, false);
     });
 
     compiler.typeCheck();
 
-    compiler.emit(function(fn) {
-        count = 0;
-        if(fn == moduleFilename.replace(/\.ts$/, ".js")) return output;
-        else return nulloutput;
-    });
+    compiler.emit(emitter);
 
     module._compile(js, moduleFilename);
 };
